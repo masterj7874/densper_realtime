@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+    <title>HVR</title>
+    <script src="https://cdn.socket.io/4.5.3/socket.io.min.js" integrity="sha384-WPFUvHkB1aHA5TDSZi6xtDgkF0wXJcIIxXhC6h8OT8EH3fC5PWro5pWJ1THjcfEi" crossorigin="anonymous"></script>
+</head>
+<body class="">
+
+<header class="py-4">
+    <img src="BI_Densper@2x.png" alt="Logo" class="logo">
+    <h1 class="text-center text-3xl font-extrabold">Densper Streaming Demo</h1>
+    <img src="dencomm_logo_extnd.jpg" alt="Logo" class="logo">
+</header>
+
+<main class="container mx-auto h-[80vh]">
+    <div class="w-[80%] py-2 mx-auto">
+        <div class="w-full h-[70vh] border border-gray-400 text-gray-700 text-xl md:text-3xl p-3 overflow-y-scroll">
+            <div class="text-box">
+                <p><span id="viewText"></span><span id="tempText" class="text-green-600"></span></p>
+        </div>
+        <div class="buttons flex mt-4">
+            <div class="mr-auto">
+                <!--button id="btnRecord" class="hidden cursor-auto bg-green-700 text-white px-4 py-2 border-none rounded-md font-semibold " onclick="startRecognize()">Recording</button-->
+            </div>
+            <div>
+                <button id="btnStart" class="bg-sky-700 text-white px-4 py-2 border-none rounded-md font-semibold" onclick="startRecognize()">음성 시작</button>
+                <button id="btnStop" class="bg-sky-700 text-white px-4 py-2 border-none rounded-md font-semibold" style="display:none" onclick="stopRecognize()">음성 종료</button>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+	const STT_SOCKET_ADDRESS = "ws://183.111.68.166:9891" // 음성인식 서버
+	const noSoundCnt = 5;       // 사운드 없음 감지를 위한 텀
+	const cutOffVolume = 200;    // 사운드 없음 판정을 위한 기준 볼륨
+
+	//var soundData = "";
+	//var cData = "";
+
+    const ws = {};
+    //let streamRef = null;
+    //let contextRef = null;
+
+    var binaryString = '';
+    var noSound = noSoundCnt;
+    var volume = 0;
+
+    const convertFloat32ToBinary = (buffer) => {
+        let len = buffer.length;
+        var sum = 0;
+        for (var i=0; i<len; i++) {
+            let u16 = Math.min(1, buffer[i]) * 0x7fff;
+            binaryString += String.fromCharCode(u16 & 0xFF);
+            binaryString += String.fromCharCode(u16 >> 8);
+            if (buffer[i]>0) {
+                sum += buffer[i];
+            }
+        }
+        volume = Math.trunc(sum * 0x7fff / len);
+		console.log(volume);
+    };
+
+    const processAudio = (e) => {
+        const left = e.inputBuffer.getChannelData(0);        
+        convertFloat32ToBinary(left);
+		//console.log(binaryString.length);
+        //if (binaryString.length == 2048) {
+            if (volume > cutOffVolume) noSound = 0;
+            else noSound++;
+            if (noSound < noSoundCnt) {
+                ws.current.send(base64(binaryString));
+                //soundData += binaryString;
+                //console.log(soundData.length);
+            } else if (noSound == noSoundCnt) {
+                ws.current.send(base64(binaryString));
+                ws.current.send("NOSOUND");
+                //var event = new CustomEvent('returnText', {"detail": "#" + cData});
+                //window.dispatchEvent(event);
+            }
+            binaryString = '';
+        //}
+    };
+
+    var base64 = function(input) {
+        var result = '', binData, i;
+        var base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='.split('');
+        if (typeof input === 'string') for (i = 0, input = input.split(''); i < input.length; i++) input[i] = input[i].charCodeAt(0);
+        for (i = 0; i < input.length; i += 3) {
+            binData = (input[i] & 0xFF) << 16 | (input[i + 1] & 0xFF) << 8 | (input[i + 2] & 0xFF);
+            result += base64Alphabet[(binData & 0xFC0000) >>> 18] +
+                      base64Alphabet[(binData & 0x03F000) >>> 12] +
+                      base64Alphabet[( i + 3 >= input.length && (input.length << 1) % 3 === 2 ? 64 :
+                                         (binData & 0x000FC0) >>> 6 )] +
+                      base64Alphabet[( i + 3 >= input.length && (input.length << 1) % 3 ? 64 :
+                                      binData & 0x00003F )];
+        }
+        return result;
+    }
+
+
+    let sockIo = undefined;
+    let mediaRecorder = null;
+	 var processor;
+
+    const connectSocket = () => {
+        var source;
+        ws.current = new WebSocket(STT_SOCKET_ADDRESS);
+
+        ws.current.onopen = async (e) => {
+            if (ws.current.readyState === 1) {
+                ws.current.send("CONNECT");
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            sampleRate: 16000,
+                        },
+                    });
+                
+                    const audioContext = new AudioContext({ sampleRate: 16000 });
+                    //streamRef.current = stream;
+                    //contextRef.current = audioContext;
+
+                    source = audioContext.createMediaStreamSource(stream);
+                    processor = audioContext.createScriptProcessor(1024, 1, 1);
+                    source.connect(processor);
+                                        
+                    ws.current.send("START");
+                    source.connect(processor);
+                    processor.connect(audioContext.destination);
+                    processor.addEventListener("audioprocess", processAudio);     
+                    
+                    //var ready = new CustomEvent('voiceReady', {'detail': 'ok'});
+                    //window.dispatchEvent(ready);
+                } catch (err) {
+                    console.error("error: ", err);
+                }
+            }            
+        }
+
+        ws.current.onmessage = (e) => {
+            //cData = e.data;
+			console.log(e.data);
+			document.querySelector("#viewText").textContent += (e.data + " ");
+            //var event = new CustomEvent('returnText', {"detail": e.data});
+            //window.dispatchEvent(event);
+        };
+    
+        ws.current.onclose = (e) => {
+			console.log("close");
+            //ws.current = new WebSocket(STT_SOCKET_ADDRESS);
+        };
+    
+        ws.current.onerror = (e) => {
+            console.error("error: ", e);
+        };
+    };
+
+
+    const startRecognize = () => {
+        // 소켓 연결 하고
+        connectSocket();
+
+        document.querySelector("#btnStart").style.display = 'none';
+        //document.querySelector("#btnRecord").style.display = 'none';
+        document.querySelector("#btnStop").style.display = 'inline';
+    };
+
+    const stopRecognize = () => {
+		processor.removeEventListener("audioprocess", processAudio);
+        ws.current.close();
+
+		document.querySelector("#btnStart").style.display = 'inline';
+		//document.querySelector("#btnRecord").style.display = 'none';
+		document.querySelector("#btnStop").style.display = 'none';
+		document.querySelector("#viewText").textContent = "";
+		document.querySelector("#tempText").textContent = "";
+    };
+
+    // 페이지 떠날 때 종료 메시지 전달
+    window.onbeforeunload = function() {
+        stopRecognize();
+    };
+</script>
+</body>
+</html>
